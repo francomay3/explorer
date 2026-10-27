@@ -42,10 +42,25 @@ Grant **Full Disk Access** to `/Applications/Explorer.app` once, so protected fo
 
 <p align="center">
   <img src="docs/details.png" alt="Details view" width="900"><br>
-  <img src="docs/preview.png" alt="Preview view" width="900">
+  <sub>Details view</sub>
 </p>
 
-<p align="center"><img src="docs/context-menu.png" alt="Context menu" width="260"></p>
+<p align="center">
+  <img src="docs/preview.png" alt="Preview view" width="900"><br>
+  <sub>Preview view</sub>
+</p>
+
+<p align="center">
+  <img src="docs/marquee.png" alt="Marquee selection with live highlight" width="900"><br>
+  <sub>Marquee selection highlights items live, before you let go</sub>
+</p>
+
+<p align="center">
+  <img src="docs/context-menu.png" alt="Context menu with Open With" height="300">
+  &nbsp;&nbsp;
+  <img src="docs/rename.png" alt="Rename popover" height="200"><br>
+  <sub>Context menu with Open With &nbsp;·&nbsp; Rename popover that shows the whole name</sub>
+</p>
 
 ## ⌨️ Shortcuts
 
