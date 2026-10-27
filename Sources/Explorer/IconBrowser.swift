@@ -81,6 +81,10 @@ final class ClickableCollectionView: NSCollectionView {
         let shift = flags.contains(.shift)
         let command = flags.contains(.command)
         let already = indexPath.map { selectionIndexPaths == [$0] } ?? false
+        if indexPath == nil, event.clickCount == 1 {
+            trackMarquee(from: event)
+            return
+        }
         let start = event.locationInWindow
         if shift, !command, allowsMultipleSelection, let indexPath {
             selectRange(through: indexPath)
@@ -102,6 +106,66 @@ final class ClickableCollectionView: NSCollectionView {
         let end = window?.mouseLocationOutsideOfEventStream ?? start
         let dragged = hypot(end.x - start.x, end.y - start.y) > 4
         renameClick.arm(alreadySelected: already, clickCount: event.clickCount, modifiers: event.modifierFlags, dragged: dragged)
+    }
+
+    /// Dragging from empty space draws a box and selects the items it touches while it moves. Esc abandons it.
+    private func trackMarquee(from event: NSEvent) {
+        guard let window else { return }
+        let start = convert(event.locationInWindow, from: nil)
+        let extend = !event.modifierFlags.intersection([.command, .shift]).isEmpty
+        let original = selectionIndexPaths
+        let base = extend ? original : []
+        window.makeFirstResponder(self)
+        if !extend, !original.isEmpty {
+            selectionIndexPaths = []
+            onSelectionChange?()
+        }
+
+        let box = MarqueeBox()
+        addSubview(box)
+        defer {
+            box.removeFromSuperview()
+            if selectionIndexPaths.isEmpty { selectionAnchor = nil } else { syncSelectionAnchor() }
+        }
+
+        var cancelled = false
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown]) {
+            if next.type == .leftMouseUp { break }
+            if next.type == .keyDown {
+                if next.keyCode == 53, !cancelled {
+                    cancelled = true
+                    box.removeFromSuperview()
+                    selectionIndexPaths = original
+                    onSelectionChange?()
+                }
+                continue
+            }
+            if cancelled { continue }
+            autoscroll(with: next)
+            let raw = convert(next.locationInWindow, from: nil)
+            let current = NSPoint(x: min(max(raw.x, bounds.minX), bounds.maxX), y: min(max(raw.y, bounds.minY), bounds.maxY))
+            let rect = NSRect(
+                x: min(start.x, current.x),
+                y: min(start.y, current.y),
+                width: abs(start.x - current.x),
+                height: abs(start.y - current.y)
+            )
+            box.frame = rect
+            var picked = base
+            for attributes in collectionViewLayout?.layoutAttributesForElements(in: rect) ?? []
+            where attributes.representedElementCategory == .item {
+                if let indexPath = attributes.indexPath, attributes.frame.intersects(rect) {
+                    picked.insert(indexPath)
+                }
+            }
+            if picked != selectionIndexPaths {
+                selectionIndexPaths = picked
+                if let last = picked.max(by: { $0.item < $1.item }) {
+                    onFocusedIndex?(last.item)
+                }
+                onSelectionChange?()
+            }
+        }
     }
 
     override func mouseUp(with event: NSEvent) {

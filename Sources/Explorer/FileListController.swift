@@ -32,6 +32,10 @@ final class FileTableView: NSTableView {
     override func mouseDown(with event: NSEvent) {
         renameClick.cancel()
         let row = row(at: convert(event.locationInWindow, from: nil))
+        if row < 0 {
+            trackMarquee(from: event)
+            return
+        }
         let already = row >= 0 && selectedRowIndexes == IndexSet(integer: row)
         let start = event.locationInWindow
         super.mouseDown(with: event)
@@ -43,6 +47,53 @@ final class FileTableView: NSTableView {
             modifiers: event.modifierFlags,
             dragged: dragged
         )
+    }
+
+    /// Dragging from the empty area below the rows draws a box. Rows it touches are selected while it moves.
+    private func trackMarquee(from event: NSEvent) {
+        guard let window else { return }
+        let start = convert(event.locationInWindow, from: nil)
+        let extend = !event.modifierFlags.intersection([.command, .shift]).isEmpty
+        let original = selectedRowIndexes
+        let base = extend ? original : IndexSet()
+        if !extend { deselectAll(nil) }
+        window.makeFirstResponder(self)
+
+        let box = MarqueeBox()
+        addSubview(box)
+        defer { box.removeFromSuperview() }
+
+        var cancelled = false
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown]) {
+            if next.type == .leftMouseUp { break }
+            if next.type == .keyDown {
+                if next.keyCode == Key.escape, !cancelled {
+                    cancelled = true
+                    box.removeFromSuperview()
+                    selectRowIndexes(original, byExtendingSelection: false)
+                }
+                continue
+            }
+            if cancelled { continue }
+            autoscroll(with: next)
+            let raw = convert(next.locationInWindow, from: nil)
+            let current = NSPoint(x: min(max(raw.x, bounds.minX), bounds.maxX), y: min(max(raw.y, bounds.minY), bounds.maxY))
+            let rect = NSRect(
+                x: min(start.x, current.x),
+                y: min(start.y, current.y),
+                width: abs(start.x - current.x),
+                height: abs(start.y - current.y)
+            )
+            box.frame = rect
+            var picked = base
+            let hit = rows(in: rect)
+            if hit.length > 0 {
+                picked.formUnion(IndexSet(integersIn: hit.location..<(hit.location + hit.length)))
+            }
+            if picked != selectedRowIndexes {
+                selectRowIndexes(picked, byExtendingSelection: false)
+            }
+        }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -66,6 +117,33 @@ private enum Key {
     static let delete: UInt16 = 51
     static let forwardDelete: UInt16 = 117
     static let x: UInt16 = 7
+    static let escape: UInt16 = 53
+}
+
+/// The translucent box drawn while dragging out a selection. Esc abandons it.
+final class MarqueeBox: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.borderWidth = 1
+    }
+
+    /// Gray like the box the system draws in the icon and preview views, so all three views match.
+    override func updateLayer() {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let tint: NSColor = dark ? .white : .black
+        layer?.backgroundColor = tint.withAlphaComponent(dark ? 0.14 : 0.1).cgColor
+        layer?.borderColor = tint.withAlphaComponent(dark ? 0.35 : 0.3).cgColor
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 final class FileListContainer: NSView {
