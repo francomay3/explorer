@@ -26,6 +26,10 @@ enum ExplorerCoreTests {
             ("folder view memory", testFolderViewMemoryFollowsTheCountUnlessChosen),
             ("folder filter", testFolderFilterStaysInTheOpenFolder),
             ("ignore rules", testIgnoreRulesFollowTheGitignoreFormat),
+            ("column layouts", testColumnLayoutsAreSavedPerFolderAndFollowRenames),
+            ("sort by new columns", testSortByExtensionAndPermissions),
+            ("sort by media", testSortByMediaDetails),
+            ("scan fills file details", testScanFillsTheFileDetails),
         ]
         var failed = 0
         for (name, test) in tests {
@@ -568,5 +572,97 @@ extension ExplorerCoreTests {
         if rules.ignores(URL(fileURLWithPath: "/elsewhere/.DS_Store"), isDirectory: false) {
             throw TestFailure(description: "rules leaked outside their base")
         }
+    }
+}
+
+extension ExplorerCoreTests {
+    static func testColumnLayoutsAreSavedPerFolderAndFollowRenames() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("columns-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let database = dir.appendingPathComponent("test.sqlite")
+        let photos = URL(fileURLWithPath: "/tmp/Photos", isDirectory: true)
+        let layout = [ColumnSetting(id: "name", width: 300), ColumnSetting(id: "dimensions", width: 110)]
+
+        var store = FolderColumnStore(databaseURL: database)
+        if store.layout(for: photos) != nil { throw TestFailure(description: "a new folder should have no saved layout") }
+        store.save(layout, for: photos)
+        store = FolderColumnStore(databaseURL: database)
+        if store.layout(for: photos) != layout { throw TestFailure(description: "layout did not survive a restart") }
+
+        let renamed = URL(fileURLWithPath: "/tmp/Pictures", isDirectory: true)
+        store.retarget(from: photos, to: renamed)
+        if store.layout(for: photos) != nil || store.layout(for: renamed) != layout {
+            throw TestFailure(description: "layout did not follow the rename")
+        }
+        store.reset(renamed)
+        store = FolderColumnStore(databaseURL: database)
+        if store.layout(for: renamed) != nil { throw TestFailure(description: "reset did not remove the layout") }
+    }
+
+    static func testSortByExtensionAndPermissions() throws {
+        func item(_ name: String, mode: Int) -> FileItem {
+            FileItem(
+                url: URL(fileURLWithPath: "/tmp/\(name)"), name: name, displayName: name, isDirectory: false,
+                isPackage: false, isSymbolicLink: false, isHidden: false, size: 1, modified: nil, kind: "Document",
+                permissions: mode
+            )
+        }
+        let items = [item("b.txt", mode: 0o755), item("a.png", mode: 0o600), item("c.md", mode: 0o644)]
+        let byExtension = sortFileItems(items, column: .ext, ascending: true).map(\.name)
+        if byExtension != ["c.md", "a.png", "b.txt"] { throw TestFailure(description: "extension order: \(byExtension)") }
+        let byPermissions = sortFileItems(items, column: .permissions, ascending: true).map(\.name)
+        if byPermissions != ["a.png", "c.md", "b.txt"] { throw TestFailure(description: "permission order: \(byPermissions)") }
+    }
+}
+
+extension ExplorerCoreTests {
+    static func testSortByMediaDetails() throws {
+        func item(_ name: String, _ media: MediaInfo?) -> FileItem {
+            FileItem(
+                url: URL(fileURLWithPath: "/tmp/\(name)"), name: name, displayName: name, isDirectory: false,
+                isPackage: false, isSymbolicLink: false, isHidden: false, size: 1, modified: nil, kind: "Image",
+                media: media
+            )
+        }
+        let early = Date(timeIntervalSince1970: 1_000)
+        let late = Date(timeIntervalSince1970: 2_000)
+        let items = [
+            item("big.png", MediaInfo(width: 4000, height: 3000, taken: late)),
+            item("note.txt", MediaInfo(taken: early)),
+            item("small.png", MediaInfo(width: 100, height: 100, taken: early)),
+            item("clip.mov", MediaInfo(width: 1920, height: 1080, taken: late, duration: 30)),
+            item("unread.png", nil),
+        ]
+        func names(_ column: SortColumn, _ ascending: Bool) -> [String] {
+            sortFileItems(items, column: column, ascending: ascending).map(\.name)
+        }
+        let taken = names(.taken, true)
+        if Array(taken.prefix(2)) != ["small.png", "big.png"] || taken.last != "unread.png" && taken.last != "note.txt" {
+            throw TestFailure(description: "taken order: \(taken)")
+        }
+        if !taken.suffix(2).contains("note.txt") { throw TestFailure(description: "a plain file's date must sort last: \(taken)") }
+        let size = names(.dimensions, false)
+        if Array(size.prefix(3)) != ["big.png", "clip.mov", "small.png"] { throw TestFailure(description: "dimension order: \(size)") }
+        let length = names(.duration, true)
+        if length.first != "clip.mov" { throw TestFailure(description: "duration order: \(length)") }
+    }
+}
+
+extension ExplorerCoreTests {
+    static func testScanFillsTheFileDetails() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("details-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("Report.TXT")
+        try "hello".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: file.path)
+        let items = try DirectoryScanner.scan(url: dir, showHidden: true)
+        guard let item = items.first else { throw TestFailure(description: "nothing scanned") }
+        if item.permissions != 0o640 { throw TestFailure(description: "permissions: \(String(describing: item.permissions))") }
+        if item.fileExtension != "txt" { throw TestFailure(description: "extension: \(item.fileExtension)") }
+        if item.created == nil || item.accessed == nil || item.modified == nil {
+            throw TestFailure(description: "dates missing: \(String(describing: item.created)) \(String(describing: item.accessed))")
+        }
+        if item.owner != NSUserName() { throw TestFailure(description: "owner: \(String(describing: item.owner))") }
     }
 }

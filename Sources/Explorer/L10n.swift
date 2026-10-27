@@ -67,6 +67,15 @@ enum L10n {
     static let updatingSize = NSLocalizedString("Updating size", comment: "Folder size is shown and being checked")
     static let type = NSLocalizedString("Type", comment: "Column")
     static let dateModified = NSLocalizedString("Date Modified", comment: "Column")
+    static let dateCreated = NSLocalizedString("Date Created", comment: "Column")
+    static let dateLastOpened = NSLocalizedString("Date Last Opened", comment: "Column")
+    static let fileExtension = NSLocalizedString("Extension", comment: "Column")
+    static let permissions = NSLocalizedString("Permissions", comment: "Column")
+    static let owner = NSLocalizedString("Owner", comment: "Column")
+    static let dimensions = NSLocalizedString("Dimensions", comment: "Column")
+    static let dateTaken = NSLocalizedString("Date Taken", comment: "Column")
+    static let duration = NSLocalizedString("Duration", comment: "Column")
+    static let resetColumns = NSLocalizedString("Reset to Default", comment: "Column menu")
     static let loading = NSLocalizedString("Loading…", comment: "")
     static let emptyFolder = NSLocalizedString("This folder is empty", comment: "")
     static let couldntComplete = NSLocalizedString("Couldn't complete the action", comment: "")
@@ -103,6 +112,20 @@ enum Format {
     static func size(_ count: Int64) -> String {
         if count == 0 { return "0 KB" }
         return bytes.string(fromByteCount: count)
+    }
+
+    static func permissions(_ mode: Int?) -> String {
+        guard let mode else { return "" }
+        let letters = Array("rwxrwxrwx")
+        return String((0..<9).map { mode & (1 << (8 - $0)) != 0 ? letters[$0] : "-" })
+    }
+
+    static func duration(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        let hours = total / 3600, minutes = (total % 3600) / 60, secs = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
+            : String(format: "%d:%02d", minutes, secs)
     }
 
     static let date: DateFormatter = {

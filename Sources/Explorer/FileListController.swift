@@ -146,6 +146,15 @@ final class MarqueeBox: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
+/// The column headings. Right-clicking them opens the menu that adds and removes columns.
+final class FileHeaderView: NSTableHeaderView {
+    var menuProvider: (() -> NSMenu)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        menuProvider?()
+    }
+}
+
 final class FileListContainer: NSView {
     var onLayout: (() -> Void)?
 
@@ -170,6 +179,10 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
     var onMove: (([URL], URL) -> Void)?
     var onContextTarget: ((FileItem?) -> Void)?
     var onVisibleFoldersChange: (() -> Void)?
+    var onColumnsChange: ((URL, [ColumnSetting]) -> Void)?
+    var onResetColumns: ((URL) -> Void)?
+    /// Media details read for the whole folder so the store can sort by them. Keyed by standardized path.
+    var onMediaLoaded: (([String: MediaInfo]) -> Void)?
     var folderSizes: FolderSizeIndex?
     var isRenaming: Bool { editingItem != nil }
 
@@ -179,6 +192,11 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
     private var editingItem: FileItem?
     private var isReloading = false
     private var ignoreSelectionChanges = false
+    private var columnsFolder: URL?
+    private var applyingColumns = false
+    private var pendingSave: DispatchWorkItem?
+    private let media = MediaMetadataCache()
+    private var loadingMediaForSort = false
 
     override init() {
         tableView = FileTableView()
@@ -220,6 +238,26 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
         ignoreSelectionChanges = false
         isReloading = false
         onVisibleFoldersChange?()
+        loadMediaForSort()
+    }
+
+    /// Sorting by a media column needs the values for every file, not only the rows on screen.
+    private func loadMediaForSort() {
+        guard let key = tableView.sortDescriptors.first?.key, DetailColumn(rawValue: key)?.isMedia == true else { return }
+        let pending = items.filter { $0.media == nil && !$0.isDirectory }
+        guard !pending.isEmpty, !loadingMediaForSort else { return }
+        loadingMediaForSort = true
+        media.loadAll(pending.map(\.url)) { [weak self] in
+            guard let self else { return }
+            self.loadingMediaForSort = false
+            var details: [String: MediaInfo] = [:]
+            for item in pending {
+                details[item.url.standardized.path] = self.media.cached(item.url) ?? MediaInfo()
+            }
+            self.onMediaLoaded?(details)
+            // The folder may have changed while this ran.
+            self.loadMediaForSort()
+        }
     }
 
     /// Every directory in this folder, in listing order. Packages included; symlinks left out.
@@ -317,7 +355,8 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let tableColumn, let column = SortColumn(rawValue: tableColumn.identifier.rawValue) else { return nil }
+        guard let tableColumn, let column = DetailColumn(rawValue: tableColumn.identifier.rawValue),
+              items.indices.contains(row) else { return nil }
         let item = items[row]
         switch column {
         case .name:
@@ -332,16 +371,55 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
                 cell.showFile(bytes: item.size)
             }
             return cell
-        case .kind:
+        default:
             let cell = reuseTextCell(id: tableColumn.identifier, in: tableView)
-            cell.show(item.kind, alignment: .left)
-            return cell
-        case .modified:
-            let cell = reuseTextCell(id: tableColumn.identifier, in: tableView)
-            let text = item.modified.map { Format.date.string(from: $0) } ?? ""
-            cell.show(text, alignment: .left)
+            cell.show(text(for: column, of: item), alignment: .left)
             return cell
         }
+    }
+
+    private func text(for column: DetailColumn, of item: FileItem) -> String {
+        switch column {
+        case .name, .size: return ""
+        case .kind: return item.kind
+        case .modified: return item.modified.map { Format.date.string(from: $0) } ?? ""
+        case .created: return item.created.map { Format.date.string(from: $0) } ?? ""
+        case .accessed: return item.accessed.map { Format.date.string(from: $0) } ?? ""
+        case .ext: return item.fileExtension
+        case .permissions: return Format.permissions(item.permissions)
+        case .owner: return item.owner ?? ""
+        case .dimensions, .taken, .duration: return mediaText(column, of: item)
+        }
+    }
+
+    private func mediaText(_ column: DetailColumn, of item: FileItem) -> String {
+        guard !item.isDirectory else { return "" }
+        guard let info = item.media ?? media.cached(item.url) else {
+            media.load(item.url) { [weak self] in self?.reloadMediaCells(for: item.url) }
+            return ""
+        }
+        guard info.isMedia else { return "" }
+        switch column {
+        case .dimensions:
+            guard let width = info.width, let height = info.height else { return "" }
+            return "\(width) × \(height)"
+        case .taken:
+            return info.taken.map { Format.date.string(from: $0) } ?? ""
+        case .duration:
+            return info.duration.map { Format.duration($0) } ?? ""
+        default:
+            return ""
+        }
+    }
+
+    private func reloadMediaCells(for url: URL) {
+        guard let row = items.firstIndex(where: { Paths.same($0.url, url) }) else { return }
+        var columns = IndexSet()
+        for (index, tableColumn) in tableView.tableColumns.enumerated() {
+            if DetailColumn(rawValue: tableColumn.identifier.rawValue)?.isMedia == true { columns.insert(index) }
+        }
+        guard !columns.isEmpty else { return }
+        tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: columns)
     }
 
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
@@ -349,6 +427,7 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
               let key = descriptor.key,
               let column = SortColumn(rawValue: key) else { return }
         onSort?(column, descriptor.ascending)
+        loadMediaForSort()
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -408,7 +487,9 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
     }
 
     private func configureTable() {
-        tableView.headerView = NSTableHeaderView()
+        let header = FileHeaderView()
+        header.menuProvider = { [weak self] in self?.columnsMenu() ?? NSMenu() }
+        tableView.headerView = header
         tableView.rowHeight = 22
         tableView.style = .plain
         tableView.usesAlternatingRowBackgroundColors = true
@@ -423,17 +504,16 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
         tableView.doubleAction = #selector(openRow(_:))
         tableView.target = self
         tableView.dataSource = self
-        addColumn(.name, title: L10n.name, width: 320, min: 140, alignment: .left)
-        addColumn(.size, title: L10n.size, width: 108, min: 80, alignment: .right)
-        addColumn(.kind, title: L10n.type, width: 140, min: 80, alignment: .left)
-        addColumn(.modified, title: L10n.dateModified, width: 170, min: 120, alignment: .left)
+        applyingColumns = true
+        for column in DetailColumn.defaults {
+            tableView.addTableColumn(makeColumn(column, width: nil))
+        }
+        applyingColumns = false
         tableView.sortDescriptors = [NSSortDescriptor(key: SortColumn.name.rawValue, ascending: true)]
         tableView.delegate = self
         tableView.unregisterDraggedTypes()
         tableView.setDraggingSourceOperationMask(.move, forLocal: true)
         tableView.setDraggingSourceOperationMask(.move, forLocal: false)
-        tableView.autosaveName = "FileList"
-        tableView.autosaveTableColumns = true
 
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
@@ -468,15 +548,157 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
         view.addSubview(messageLabel)
     }
 
-    private func addColumn(_ column: SortColumn, title: String, width: CGFloat, min: CGFloat, alignment: NSTextAlignment) {
+    private struct ColumnSpec {
+        let title: String
+        let width: CGFloat
+        let min: CGFloat
+        let alignment: NSTextAlignment
+    }
+
+    private func spec(_ column: DetailColumn) -> ColumnSpec {
+        switch column {
+        case .name: return ColumnSpec(title: L10n.name, width: 320, min: 140, alignment: .left)
+        case .size: return ColumnSpec(title: L10n.size, width: 108, min: 80, alignment: .right)
+        case .kind: return ColumnSpec(title: L10n.type, width: 140, min: 80, alignment: .left)
+        case .modified: return ColumnSpec(title: L10n.dateModified, width: 170, min: 120, alignment: .left)
+        case .created: return ColumnSpec(title: L10n.dateCreated, width: 170, min: 120, alignment: .left)
+        case .accessed: return ColumnSpec(title: L10n.dateLastOpened, width: 170, min: 120, alignment: .left)
+        case .ext: return ColumnSpec(title: L10n.fileExtension, width: 90, min: 60, alignment: .left)
+        case .permissions: return ColumnSpec(title: L10n.permissions, width: 110, min: 80, alignment: .left)
+        case .owner: return ColumnSpec(title: L10n.owner, width: 110, min: 70, alignment: .left)
+        case .dimensions: return ColumnSpec(title: L10n.dimensions, width: 110, min: 80, alignment: .left)
+        case .taken: return ColumnSpec(title: L10n.dateTaken, width: 170, min: 120, alignment: .left)
+        case .duration: return ColumnSpec(title: L10n.duration, width: 90, min: 60, alignment: .left)
+        }
+    }
+
+    private func makeColumn(_ column: DetailColumn, width: CGFloat?) -> NSTableColumn {
+        let spec = spec(column)
         let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.rawValue))
-        tableColumn.title = title
-        tableColumn.width = width
-        tableColumn.minWidth = min
-        tableColumn.headerCell.alignment = alignment
+        tableColumn.title = spec.title
+        tableColumn.width = width ?? spec.width
+        tableColumn.minWidth = spec.min
+        tableColumn.headerCell.alignment = spec.alignment
         tableColumn.resizingMask = column == .name ? [.autoresizingMask, .userResizingMask] : [.userResizingMask]
-        tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: column.rawValue, ascending: true)
-        tableView.addTableColumn(tableColumn)
+        if let sortColumn = column.sortColumn {
+            tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: sortColumn.rawValue, ascending: true)
+        }
+        return tableColumn
+    }
+
+    // MARK: Column layout per folder
+
+    /// Shows the columns saved for `url`, or the default ones when nothing is saved.
+    func applyColumns(for url: URL, layout: [ColumnSetting]?) {
+        columnsFolder = url
+        pendingSave?.cancel()
+        media.reset()
+        let wanted = layout ?? DetailColumn.defaults.map { ColumnSetting(id: $0.rawValue, width: Double(spec($0).width)) }
+        setColumns(wanted)
+    }
+
+    private func setColumns(_ layout: [ColumnSetting]) {
+        applyingColumns = true
+        defer { applyingColumns = false }
+        var wanted = layout.filter { DetailColumn(rawValue: $0.id) != nil }
+        if !wanted.contains(where: { $0.id == DetailColumn.name.rawValue }) {
+            wanted.insert(ColumnSetting(id: DetailColumn.name.rawValue, width: Double(spec(.name).width)), at: 0)
+        }
+        let ids = Set(wanted.map(\.id))
+        for tableColumn in tableView.tableColumns where !ids.contains(tableColumn.identifier.rawValue) {
+            tableView.removeTableColumn(tableColumn)
+        }
+        for setting in wanted where tableView.column(withIdentifier: NSUserInterfaceItemIdentifier(setting.id)) < 0 {
+            if let column = DetailColumn(rawValue: setting.id) {
+                tableView.addTableColumn(makeColumn(column, width: CGFloat(setting.width)))
+            }
+        }
+        for (index, setting) in wanted.enumerated() {
+            let current = tableView.column(withIdentifier: NSUserInterfaceItemIdentifier(setting.id))
+            guard current >= 0 else { continue }
+            if current != index { tableView.moveColumn(current, toColumn: index) }
+            tableView.tableColumns[index].width = CGFloat(setting.width)
+        }
+        // A hidden column cannot be the sort key, so fall back to the name.
+        if let key = tableView.sortDescriptors.first?.key,
+           tableView.column(withIdentifier: NSUserInterfaceItemIdentifier(key)) < 0 {
+            tableView.sortDescriptors = [NSSortDescriptor(key: SortColumn.name.rawValue, ascending: true)]
+        }
+    }
+
+    private func currentLayout() -> [ColumnSetting] {
+        tableView.tableColumns.map { ColumnSetting(id: $0.identifier.rawValue, width: Double($0.width)) }
+    }
+
+    private func saveNow() {
+        pendingSave?.cancel()
+        guard let url = columnsFolder else { return }
+        onColumnsChange?(url, currentLayout())
+    }
+
+    /// Resizing fires many times while dragging, so the layout is saved once the drag settles.
+    private func saveSoon() {
+        pendingSave?.cancel()
+        guard let url = columnsFolder else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let current = self.columnsFolder, Paths.same(current, url) else { return }
+            self.onColumnsChange?(url, self.currentLayout())
+        }
+        pendingSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    func tableViewColumnDidResize(_ notification: Notification) {
+        guard !applyingColumns, (tableView.headerView?.resizedColumn ?? -1) >= 0 else { return }
+        saveSoon()
+    }
+
+    func tableViewColumnDidMove(_ notification: Notification) {
+        guard !applyingColumns else { return }
+        saveSoon()
+    }
+
+    private func columnsMenu() -> NSMenu {
+        let menu = NSMenu()
+        let groups: [[DetailColumn]] = [
+            [.name, .size, .kind, .modified, .created, .accessed, .ext, .permissions, .owner],
+            [.dimensions, .taken, .duration],
+        ]
+        for group in groups {
+            for column in group {
+                let item = NSMenuItem(title: spec(column).title, action: #selector(toggleColumn(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = column.rawValue
+                let visible = tableView.column(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue)) >= 0
+                item.state = visible ? .on : .off
+                item.isEnabled = !column.isRequired
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+        }
+        let reset = NSMenuItem(title: L10n.resetColumns, action: #selector(resetColumns(_:)), keyEquivalent: "")
+        reset.target = self
+        menu.addItem(reset)
+        return menu
+    }
+
+    @objc private func toggleColumn(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let column = DetailColumn(rawValue: raw),
+              !column.isRequired else { return }
+        var layout = currentLayout()
+        if let index = layout.firstIndex(where: { $0.id == raw }) {
+            layout.remove(at: index)
+        } else {
+            layout.append(ColumnSetting(id: raw, width: Double(spec(column).width)))
+        }
+        setColumns(layout)
+        saveNow()
+    }
+
+    @objc private func resetColumns(_ sender: Any?) {
+        guard let url = columnsFolder else { return }
+        applyColumns(for: url, layout: nil)
+        onResetColumns?(url)
     }
 
     private func reuseNameCell(id: NSUserInterfaceItemIdentifier, in table: NSTableView) -> NameCell {

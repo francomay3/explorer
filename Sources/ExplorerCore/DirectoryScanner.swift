@@ -11,6 +11,8 @@ public enum DirectoryScanner {
             .contentModificationDateKey,
             .localizedNameKey,
             .localizedTypeDescriptionKey,
+            .creationDateKey,
+            .contentAccessDateKey,
         ]
         let options: FileManager.DirectoryEnumerationOptions = showHidden ? [] : [.skipsHiddenFiles]
         let children = try FileManager.default.contentsOfDirectory(
@@ -42,6 +44,8 @@ public enum DirectoryScanner {
             size = nil
         }
         let kind = values?.localizedTypeDescription ?? fallbackKind(isDirectory: isDirectory, isPackage: isPackage)
+        var status = stat()
+        let hasStatus = lstat(url.path, &status) == 0
         return FileItem(
             url: url.standardized,
             name: name,
@@ -52,7 +56,11 @@ public enum DirectoryScanner {
             isHidden: values?.isHidden ?? name.hasPrefix("."),
             size: size,
             modified: values?.contentModificationDate,
-            kind: kind
+            kind: kind,
+            created: values?.creationDate,
+            accessed: values?.contentAccessDate,
+            permissions: hasStatus ? Int(status.st_mode & 0o7777) : nil,
+            owner: hasStatus ? OwnerNames.name(for: status.st_uid) : nil
         )
     }
 
@@ -65,5 +73,28 @@ public enum DirectoryScanner {
     private static func fallbackKind(isDirectory: Bool, isPackage: Bool) -> String {
         if isDirectory && !isPackage { return "Folder" }
         return "Document"
+    }
+}
+
+/// User names for the owner column. Looked up once per user id.
+private enum OwnerNames {
+    private static let lock = NSLock()
+    private static var cache: [uid_t: String] = [:]
+
+    static func name(for uid: uid_t) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = cache[uid] { return cached }
+        var entry = passwd()
+        var result: UnsafeMutablePointer<passwd>?
+        var buffer = [CChar](repeating: 0, count: 1024)
+        let name: String
+        if getpwuid_r(uid, &entry, &buffer, buffer.count, &result) == 0, result != nil {
+            name = String(cString: entry.pw_name)
+        } else {
+            name = String(uid)
+        }
+        cache[uid] = name
+        return name
     }
 }

@@ -84,6 +84,23 @@ final class ContentPane: NSObject {
         details.reloadSizeCells(paths)
     }
 
+    var onColumnsChange: ((URL, [ColumnSetting]) -> Void)? {
+        get { details.onColumnsChange }
+        set { details.onColumnsChange = newValue }
+    }
+    var onMediaLoaded: (([String: MediaInfo]) -> Void)? {
+        get { details.onMediaLoaded }
+        set { details.onMediaLoaded = newValue }
+    }
+    var onResetColumns: ((URL) -> Void)? {
+        get { details.onResetColumns }
+        set { details.onResetColumns = newValue }
+    }
+
+    func applyColumns(for url: URL, layout: [ColumnSetting]?) {
+        details.applyColumns(for: url, layout: layout)
+    }
+
     var isRenaming: Bool { details.isRenaming }
 
     var keyView: NSView {

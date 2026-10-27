@@ -62,11 +62,16 @@ public final class FolderViewStore {
     }
 }
 
-private final class FolderViewDatabase {
+/// One text value per folder path in a SQLite table. Folder views and column layouts each use one.
+final class FolderViewDatabase {
     private var db: OpaquePointer?
     private let queue = DispatchQueue(label: "dev.framay.explorer.folder-views")
+    private let table: String
+    private let column: String
 
-    init?(url: URL) {
+    init?(url: URL, table: String = "folder_view", column: String = "mode") {
+        self.table = table
+        self.column = column
         var handle: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(url.path, &handle, flags, nil) == SQLITE_OK, let handle else {
@@ -79,9 +84,9 @@ private final class FolderViewDatabase {
               execute("PRAGMA synchronous=NORMAL"),
               execute(
                 """
-                CREATE TABLE IF NOT EXISTS folder_view (
+                CREATE TABLE IF NOT EXISTS \(table) (
                     path TEXT PRIMARY KEY NOT NULL,
-                    mode TEXT NOT NULL
+                    \(column) TEXT NOT NULL
                 )
                 """
               )
@@ -100,7 +105,7 @@ private final class FolderViewDatabase {
         queue.sync {
             var rows: [String: String] = [:]
             var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT path, mode FROM folder_view", -1, &statement, nil) == SQLITE_OK,
+            guard sqlite3_prepare_v2(db, "SELECT path, \(column) FROM \(table)", -1, &statement, nil) == SQLITE_OK,
                   let statement
             else { return rows }
             defer { sqlite3_finalize(statement) }
@@ -118,7 +123,7 @@ private final class FolderViewDatabase {
         queue.sync {
             guard execute("BEGIN") else { return }
             var statement: OpaquePointer?
-            let sql = "INSERT INTO folder_view (path, mode) VALUES (?, ?) ON CONFLICT(path) DO UPDATE SET mode = excluded.mode"
+            let sql = "INSERT INTO \(table) (path, \(column)) VALUES (?, ?) ON CONFLICT(path) DO UPDATE SET \(column) = excluded.\(column)"
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
                 _ = execute("ROLLBACK")
                 return
@@ -143,7 +148,7 @@ private final class FolderViewDatabase {
         queue.sync {
             guard execute("BEGIN") else { return }
             var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "DELETE FROM folder_view WHERE path = ?", -1, &statement, nil) == SQLITE_OK,
+            guard sqlite3_prepare_v2(db, "DELETE FROM \(table) WHERE path = ?", -1, &statement, nil) == SQLITE_OK,
                   let statement
             else {
                 _ = execute("ROLLBACK")

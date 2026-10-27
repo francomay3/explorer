@@ -5,6 +5,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
     private let store: BrowserStore
     private let folderSizes: FolderSizeIndex
     private let folderViews: FolderViewStore
+    private let folderColumns: FolderColumnStore
     private let content = ContentPane()
     private let tree = FolderTreeController()
     private let split = NSSplitView()
@@ -38,6 +39,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
         let databaseURL = FolderSizeIndex.defaultDatabaseURL()
         folderSizes = FolderSizeIndex(databaseURL: databaseURL)
         folderViews = FolderViewStore(databaseURL: databaseURL)
+        folderColumns = FolderColumnStore(databaseURL: databaseURL)
         launchURL = url ?? FileManager.default.homeDirectoryForCurrentUser
         store = BrowserStore(startingAt: launchURL)
         let window = NSWindow(
@@ -245,6 +247,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
         folderSizes.finishRemoval(plan, succeeded: succeeded)
         for url in succeeded {
             folderViews.forget(url)
+            folderColumns.forget(url)
             BookmarkStore.shared.forget(url)
         }
         store.refresh()
@@ -516,6 +519,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
                 let renamed = try self.store.rename(item, to: name)
                 self.folderSizes.noteRenamed(from: item.url, to: renamed)
                 self.folderViews.retarget(from: item.url, to: renamed)
+                self.folderColumns.retarget(from: item.url, to: renamed)
                 BookmarkStore.shared.retarget(from: item.url, to: renamed)
             } catch {
                 self.content.restoreName(of: item)
@@ -525,6 +529,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
         content.onSelectionChange = { [weak self] in
             guard let self else { return }
             self.updateStatus(self.store.snapshot)
+        }
+        content.onColumnsChange = { [weak self] url, layout in
+            self?.folderColumns.save(layout, for: url)
+        }
+        content.onMediaLoaded = { [weak self] details in
+            self?.store.applyMedia(details)
+        }
+        content.onResetColumns = { [weak self] url in
+            self?.folderColumns.reset(url)
         }
         content.onSort = { [weak self] column, ascending in
             self?.store.applySort(column: column, ascending: ascending)
@@ -615,6 +628,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
 
         let sameFolder = lastCompletedURL.map { Paths.same($0, snapshot.url) } ?? false
         applyStoredView(snapshot)
+        if !sameFolder {
+            content.applyColumns(for: snapshot.url, layout: folderColumns.layout(for: snapshot.url))
+        }
         let listing = listing(for: snapshot)
         content.show(items: listing.items, preserveSelection: sameFolder)
         lastCompletedURL = snapshot.url
@@ -793,6 +809,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
             let arrived = FileManager.default.fileExists(atPath: destination.path)
             if sourceGone && arrived {
                 folderViews.retarget(from: url, to: destination)
+                folderColumns.retarget(from: url, to: destination)
                 BookmarkStore.shared.retarget(from: url, to: destination)
             }
         }
@@ -813,6 +830,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
                 let renamed = try FileActions.rename(url: url, to: field.stringValue)
                 self.folderSizes.noteRenamed(from: url, to: renamed)
                 self.folderViews.retarget(from: url, to: renamed)
+                self.folderColumns.retarget(from: url, to: renamed)
                 BookmarkStore.shared.retarget(from: url, to: renamed)
                 self.store.refresh()
                 if let parent = Paths.parent(of: url) {

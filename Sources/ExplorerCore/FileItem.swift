@@ -1,5 +1,28 @@
 import Foundation
 
+/// Photo and video details. Missing values stay nil.
+public struct MediaInfo: Equatable, Hashable {
+    public var width: Int?
+    public var height: Int?
+    public var taken: Date?
+    public var duration: Double?
+
+    public init(width: Int? = nil, height: Int? = nil, taken: Date? = nil, duration: Double? = nil) {
+        self.width = width
+        self.height = height
+        self.taken = taken
+        self.duration = duration
+    }
+
+    /// Plain files carry none of these values, so a capture date alone does not make a file media.
+    public var isMedia: Bool { width != nil || duration != nil }
+
+    public var pixels: Int? {
+        guard let width, let height else { return nil }
+        return width * height
+    }
+}
+
 public struct FileItem: Equatable, Hashable {
     public let url: URL
     public let name: String
@@ -11,6 +34,13 @@ public struct FileItem: Equatable, Hashable {
     public let size: Int64?
     public let modified: Date?
     public let kind: String
+    public let created: Date?
+    public let accessed: Date?
+    /// The permission bits, such as 0o644.
+    public let permissions: Int?
+    public let owner: String?
+    /// nil until the details have been read. Only the media columns ask for them.
+    public let media: MediaInfo?
 
     public init(
         url: URL,
@@ -22,7 +52,12 @@ public struct FileItem: Equatable, Hashable {
         isHidden: Bool,
         size: Int64?,
         modified: Date?,
-        kind: String
+        kind: String,
+        created: Date? = nil,
+        accessed: Date? = nil,
+        permissions: Int? = nil,
+        owner: String? = nil,
+        media: MediaInfo? = nil
     ) {
         self.url = url
         self.name = name
@@ -34,6 +69,15 @@ public struct FileItem: Equatable, Hashable {
         self.size = size
         self.modified = modified
         self.kind = kind
+        self.created = created
+        self.accessed = accessed
+        self.permissions = permissions
+        self.owner = owner
+        self.media = media
+    }
+
+    public var fileExtension: String {
+        isDirectory && !isPackage ? "" : (name as NSString).pathExtension.lowercased()
     }
 
     public func replacingSize(_ size: Int64?) -> FileItem {
@@ -47,7 +91,32 @@ public struct FileItem: Equatable, Hashable {
             isHidden: isHidden,
             size: size,
             modified: modified,
-            kind: kind
+            kind: kind,
+            created: created,
+            accessed: accessed,
+            permissions: permissions,
+            owner: owner,
+            media: media
+        )
+    }
+
+    public func withMedia(_ media: MediaInfo) -> FileItem {
+        FileItem(
+            url: url,
+            name: name,
+            displayName: displayName,
+            isDirectory: isDirectory,
+            isPackage: isPackage,
+            isSymbolicLink: isSymbolicLink,
+            isHidden: isHidden,
+            size: size,
+            modified: modified,
+            kind: kind,
+            created: created,
+            accessed: accessed,
+            permissions: permissions,
+            owner: owner,
+            media: media
         )
     }
 
@@ -72,4 +141,12 @@ public enum SortColumn: String, Equatable {
     case size
     case kind
     case modified
+    case created
+    case accessed
+    case ext
+    case permissions
+    case owner
+    case dimensions
+    case taken
+    case duration
 }

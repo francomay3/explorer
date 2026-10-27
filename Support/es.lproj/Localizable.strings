@@ -75,3 +75,12 @@
 "%@ (default)" = "%@ (predeterminada)";
 "Get Info" = "Obtener información";
 "Explorer needs permission to control Finder. Allow it in System Settings > Privacy & Security > Automation." = "Explorer necesita permiso para controlar Finder. Activalo en Ajustes del Sistema > Privacidad y seguridad > Automatización.";
+"Date Created" = "Fecha de creación";
+"Date Last Opened" = "Fecha de última apertura";
+"Extension" = "Extensión";
+"Permissions" = "Permisos";
+"Owner" = "Propietario";
+"Dimensions" = "Dimensiones";
+"Date Taken" = "Fecha de captura";
+"Duration" = "Duración";
+"Reset to Default" = "Restablecer";

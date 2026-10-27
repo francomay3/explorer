@@ -88,6 +88,22 @@ public final class BrowserStore {
         reload()
     }
 
+    /// Adds media details read for the open folder, keyed by standardized path, and sorts again when they decide the order.
+    public func applyMedia(_ details: [String: MediaInfo]) {
+        assertMain()
+        guard !details.isEmpty else { return }
+        snapshot.items = snapshot.items.map { item in
+            details[item.url.standardized.path].map { item.withMedia($0) } ?? item
+        }
+        switch snapshot.sortColumn {
+        case .dimensions, .taken, .duration:
+            snapshot.items = sortFileItems(snapshot.items, column: snapshot.sortColumn, ascending: snapshot.sortAscending)
+        default:
+            break
+        }
+        publish()
+    }
+
     public func applySort(column: SortColumn, ascending: Bool) {
         assertMain()
         snapshot.sortColumn = column
