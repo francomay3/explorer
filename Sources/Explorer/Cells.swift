@@ -4,9 +4,21 @@ import ExplorerCore
 final class NameCell: NSTableCellView {
     let nameField = NSTextField(labelWithString: "")
     private let iconView = DragForwardingImageView()
+    private let ejectButton = NSButton()
+    private var nameTrailing: NSLayoutConstraint?
+    private var onEject: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        ejectButton.image = NSImage(systemSymbolName: "eject.fill", accessibilityDescription: L10n.eject)
+        ejectButton.imagePosition = .imageOnly
+        ejectButton.isBordered = false
+        ejectButton.contentTintColor = .secondaryLabelColor
+        ejectButton.toolTip = L10n.eject
+        ejectButton.target = self
+        ejectButton.action = #selector(ejectClicked)
+        ejectButton.isHidden = true
+        ejectButton.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
         nameField.translatesAutoresizingMaskIntoConstraints = false
@@ -15,6 +27,7 @@ final class NameCell: NSTableCellView {
         nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(iconView)
         addSubview(nameField)
+        addSubview(ejectButton)
         imageView = iconView
         textField = nameField
         iconView.unregisterDraggedTypes()
@@ -25,9 +38,15 @@ final class NameCell: NSTableCellView {
             iconView.widthAnchor.constraint(equalToConstant: 16),
             iconView.heightAnchor.constraint(equalToConstant: 16),
             nameField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
-            nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             nameField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ejectButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            ejectButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ejectButton.widthAnchor.constraint(equalToConstant: 16),
+            ejectButton.heightAnchor.constraint(equalToConstant: 16),
         ])
+        let trailing = nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
+        trailing.isActive = true
+        nameTrailing = trailing
     }
 
     @available(*, unavailable)
@@ -35,9 +54,21 @@ final class NameCell: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// Shows an eject button after the name, or none when `action` is nil.
+    func setEject(_ action: (() -> Void)?) {
+        onEject = action
+        ejectButton.isHidden = action == nil
+        nameTrailing?.constant = action == nil ? -4 : -24
+    }
+
+    @objc private func ejectClicked() {
+        onEject?()
+    }
+
     func show(name: String, icon: NSImage) {
         nameField.stringValue = name
         iconView.image = icon
+        setEject(nil)
         iconView.unregisterDraggedTypes()
         nameField.unregisterDraggedTypes()
     }

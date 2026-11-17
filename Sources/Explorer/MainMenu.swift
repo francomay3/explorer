@@ -46,6 +46,8 @@ enum MainMenu {
             String(UnicodeScalar(NSF2FunctionKey)!),
             []
         ))
+        menu.addItem(item(L10n.compressToZip, #selector(MainWindowController.compressSelection(_:))))
+        menu.addItem(item(L10n.decompress, #selector(MainWindowController.decompressSelection(_:))))
         menu.addItem(.separator())
         menu.addItem(item(
             L10n.moveToTrash,

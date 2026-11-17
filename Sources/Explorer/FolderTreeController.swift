@@ -10,6 +10,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     var startsCollapsed = true
     var onNavigate: ((URL) -> Void)?
     var onMove: (([URL], URL) -> Void)?
+    var onEject: ((URL) -> Void)?
 
     private var roots: [FolderNode] = []
     private var topLevel: [Any] = []
@@ -91,7 +92,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        item is FolderNode
+        hasSubfolders(item)
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
@@ -99,7 +100,13 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldShowOutlineCellForItem item: Any) -> Bool {
-        item is FolderNode
+        hasSubfolders(item)
+    }
+
+    /// Folders without subfolders get no chevron. The scan is cached on the node.
+    private func hasSubfolders(_ item: Any) -> Bool {
+        guard let node = item as? FolderNode else { return false }
+        return !node.children().isEmpty
     }
 
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
@@ -120,6 +127,10 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         let cell = (outlineView.makeView(withIdentifier: id, owner: nil) as? NameCell) ?? NameCell()
         cell.identifier = id
         cell.show(name: node.title, icon: node.icon)
+        if node.isVolume, Volumes.isEjectable(node.url) {
+            let url = node.url
+            cell.setEject { [weak self] in self?.onEject?(url) }
+        }
         return cell
     }
 
@@ -207,13 +218,14 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     private func rebuildRoots() {
         let fileManager = FileManager.default
         let showsHidden = { [weak self] in self?.showsHidden ?? true }
-        func makeNode(_ url: URL) -> FolderNode {
+        func makeNode(_ url: URL, isVolume: Bool = false) -> FolderNode {
             let standard = url.standardized
             return FolderNode(
                 url: standard,
                 title: fileManager.displayName(atPath: standard.path),
                 parent: nil,
-                showsHidden: showsHidden
+                showsHidden: showsHidden,
+                isVolume: isVolume
             )
         }
         func isFolder(_ url: URL) -> Bool {
@@ -235,13 +247,16 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
                 appendShortcut(url)
             }
         }
+        if let url = fileManager.urls(for: .applicationDirectory, in: .localDomainMask).first {
+            appendShortcut(url)
+        }
 
         let volumes = (fileManager.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? [])
             .sorted {
                 fileManager.displayName(atPath: $0.path)
                     .localizedStandardCompare(fileManager.displayName(atPath: $1.path)) == .orderedAscending
             }
-            .map { makeNode($0) }
+            .map { makeNode($0, isVolume: true) }
 
         let bookmarks = BookmarkStore.shared.urls
             .filter { isFolder($0) }
@@ -394,10 +409,13 @@ private final class FolderNode {
     let title: String
     var icon: NSImage { Icons.file(url) }
     weak var parent: FolderNode?
+    /// A top-level entry under Locations.
+    let isVolume: Bool
     private let showsHidden: () -> Bool
     private var cachedChildren: [FolderNode]?
 
-    init(url: URL, title: String, parent: FolderNode?, showsHidden: @escaping () -> Bool) {
+    init(url: URL, title: String, parent: FolderNode?, showsHidden: @escaping () -> Bool, isVolume: Bool = false) {
+        self.isVolume = isVolume
         self.url = url
         self.title = title
         self.parent = parent

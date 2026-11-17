@@ -24,6 +24,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
     private var contextDisablesPaste = false
     private var mouseMonitor: Any?
     private var lastCompletedURL: URL?
+    private let folderWatcher = FolderWatcher()
+    private var watchedURL: URL?
     private var pendingTreeURL: URL?
     private var displayedURL: URL?
     private var committingPath = false
@@ -34,6 +36,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
     private var restoreOnArrival = false
     private var scrollToRestore: NSPoint?
     private var selectionToRestore: [URL] = []
+    private var archiveJobs = 0
+    private var archiveStatus: String?
+    private let archiveQueue = DispatchQueue(label: "explorer.archive", qos: .userInitiated)
 
     init(startingAt url: URL? = nil) {
         let databaseURL = FolderSizeIndex.defaultDatabaseURL()
@@ -60,6 +65,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
             guard let self else { return }
             self.tree.rebuildSidebar(revealing: self.store.snapshot.url)
             self.store.refresh()
+        }
+        // Files added or removed by other programs while this folder is open.
+        folderWatcher.onChange = { [weak self] in self?.refreshForExternalChange() }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshForExternalChange()
         }
         // Drives plugged in or ejected while the app is open.
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
@@ -101,7 +111,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
         }
     }
 
-    // Back and Forward return to the page as it was left. Up and opening a folder start clean.
+    // Back and Forward return to the page as it was left.
+    // Up opens the parent with the folder just left selected. Opening a folder starts clean.
     @objc func goBack(_ sender: Any?) {
         restoreOnArrival = store.snapshot.canGoBack
         store.back()
@@ -263,6 +274,69 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
         NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 
+    @objc func compressSelection(_ sender: Any?) {
+        let urls = actedURLs()
+        guard !urls.isEmpty, archiveJobs == 0 else { return }
+        startArchive(L10n.compressing) {
+            do {
+                return ArchiveResult(created: [try Archives.compress(urls)])
+            } catch {
+                return ArchiveResult(failure: error)
+            }
+        }
+    }
+
+    @objc func decompressSelection(_ sender: Any?) {
+        let urls = actedURLs().filter { Archives.format(of: $0) != nil }
+        guard !urls.isEmpty, archiveJobs == 0 else { return }
+        startArchive(L10n.decompressing) {
+            var result = ArchiveResult()
+            for url in urls {
+                do {
+                    result.created.append(try Archives.decompress(url))
+                } catch {
+                    if result.failure == nil { result.failure = error }
+                }
+            }
+            return result
+        }
+    }
+
+    /// Zip and unrar can take a while, so the work runs off the main thread and the status line says so.
+    private func startArchive(_ status: String, _ work: @escaping () -> ArchiveResult) {
+        archiveJobs += 1
+        archiveStatus = status
+        updateStatus(store.snapshot)
+        archiveQueue.async { [weak self] in
+            let result = work()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.archiveJobs -= 1
+                if self.archiveJobs == 0 { self.archiveStatus = nil }
+                if let failure = result.failure {
+                    self.present(failure)
+                }
+                self.revealArchiveResults(result.created)
+            }
+        }
+    }
+
+    private func revealArchiveResults(_ urls: [URL]) {
+        guard let parent = urls.first.flatMap(Paths.parent(of:)) else {
+            store.refresh()
+            return
+        }
+        tree.refreshExpandedFolder(parent)
+        // The user may have moved on while the archive was being written.
+        guard Paths.same(store.snapshot.url, parent) else { return }
+        if urls.count == 1 {
+            selectAfterLoad = urls[0]
+        } else {
+            selectionToRestore = urls
+        }
+        store.refresh()
+    }
+
     func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         let snapshot = store.snapshot
         let urls = actedURLs()
@@ -285,6 +359,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
             return !urls.isEmpty
         case #selector(showInFinder(_:)):
             return !urls.isEmpty
+        case #selector(compressSelection(_:)):
+            return archiveJobs == 0 && !urls.isEmpty
+        case #selector(decompressSelection(_:)):
+            return archiveJobs == 0 && Archives.canDecompress(urls)
         case #selector(openWithApp(_:)), #selector(openWithOther(_:)):
             return true
         case #selector(toggleHidden(_:)):
@@ -557,6 +635,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
         content.onMove = { [weak self] urls, folder in
             self?.moveItems(urls, to: folder)
         }
+        tree.onEject = { [weak self] url in
+            self?.eject(url)
+        }
         tree.onMove = { [weak self] urls, folder in
             self?.moveItems(urls, to: folder)
         }
@@ -594,6 +675,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
             restoreOnArrival = false
         }
         searchFolder = snapshot.url
+        if watchedURL.map({ !Paths.same($0, snapshot.url) }) ?? true {
+            watchedURL = snapshot.url
+            folderWatcher.watch(snapshot.url)
+        }
         if tree.startsCollapsed, !Paths.same(snapshot.url, launchURL) {
             tree.startsCollapsed = false
         }
@@ -665,6 +750,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
     }
 
     private func updateStatus(_ snapshot: BrowserSnapshot) {
+        if let archiveStatus {
+            statusField.stringValue = archiveStatus
+            statusField.textColor = .secondaryLabelColor
+            return
+        }
         if snapshot.isLoading {
             statusField.stringValue = L10n.loading
             statusField.textColor = .secondaryLabelColor
@@ -1005,6 +1095,36 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
         }
     }
 
+    /// Reloads the open folder after something outside the app changed it.
+    private func refreshForExternalChange() {
+        guard !store.snapshot.isLoading else { return }
+        // A reload would end an inline rename, so wait for it to finish.
+        if content.isRenaming {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.refreshForExternalChange() }
+            return
+        }
+        store.refresh()
+    }
+
+    @objc private func ejectSelection(_ sender: Any?) {
+        guard let url = contextURLs?.first else { return }
+        eject(url)
+    }
+
+    private func eject(_ url: URL) {
+        let current = store.snapshot.url.standardized.path
+        let volume = url.standardized.path
+        Volumes.eject(url) { [weak self] error in
+            guard let self else { return }
+            if let error {
+                self.present(error)
+            } else if current == volume || current.hasPrefix(volume + "/") {
+                // The folder on screen went away with the volume.
+                self.store.open(FileManager.default.homeDirectoryForCurrentUser)
+            }
+        }
+    }
+
     private func present(_ error: Error) {
         guard let window else { return }
         let alert = NSAlert()
@@ -1050,6 +1170,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSSplit
             }
             menu.addItem(contextItem(L10n.getInfo, #selector(getInfo(_:)), ""))
             menu.addItem(contextItem(L10n.showInFinder, #selector(showInFinder(_:)), ""))
+            if let urls = contextURLs, urls.count == 1, Volumes.isEjectable(urls[0]) {
+                menu.addItem(contextItem(L10n.eject, #selector(ejectSelection(_:)), ""))
+            }
+            let urls = contextURLs ?? []
+            if Archives.canDecompress(urls) {
+                menu.addItem(contextItem(L10n.decompress, #selector(decompressSelection(_:)), ""))
+            }
+            menu.addItem(contextItem(L10n.compressToZip, #selector(compressSelection(_:)), ""))
             menu.addItem(.separator())
             menu.addItem(contextItem(L10n.moveToTrash, #selector(trashSelection(_:)), ""))
         } else {
@@ -1221,6 +1349,11 @@ private struct BrowseState {
     let regex: Bool
     let scroll: NSPoint
     let selection: [URL]
+}
+
+private struct ArchiveResult {
+    var created: [URL] = []
+    var failure: Error?
 }
 
 private struct HeldFiles {

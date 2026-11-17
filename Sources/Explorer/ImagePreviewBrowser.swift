@@ -1,5 +1,7 @@
 import AppKit
+import AVKit
 import ExplorerCore
+import PDFKit
 
 /// Every file in a horizontal line, with a preview of the selection above it.
 final class ImagePreviewBrowser: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegate, NSTextFieldDelegate {
@@ -100,12 +102,38 @@ final class ImagePreviewBrowser: NSObject, NSCollectionViewDataSource, NSCollect
         view.collection.syncSelectionAnchor()
         ignoreSelectionChanges = false
         if reveal, let focusedIndex {
-            view.collection.scrollToItems(
-                at: [IndexPath(item: focusedIndex, section: 0)],
-                scrollPosition: .nearestHorizontalEdge
-            )
+            // A folder change pins the strip to the left. Forget that pin before scrolling, or the next layout pulls the item back off screen.
+            heldScrollX = nil
+            scrollItemIntoView(focusedIndex)
         }
         loadStage()
+    }
+
+    /// Scrolls only when the item is outside the strip, and retries after layout if the first attempt landed short.
+    private func scrollItemIntoView(_ index: Int) {
+        guard items.indices.contains(index) else { return }
+        let path = items[index].url.standardized.path
+        let indexPath = IndexPath(item: index, section: 0)
+        view.collection.layoutSubtreeIfNeeded()
+        if itemIsVisible(indexPath) { return }
+        view.collection.scrollToItems(at: [indexPath], scrollPosition: .nearestHorizontalEdge)
+        guard !itemIsVisible(indexPath) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let current = self.items.firstIndex(where: { $0.url.standardized.path == path }),
+                  self.view.collection.selectionIndexPaths.contains(IndexPath(item: current, section: 0)) else { return }
+            let currentPath = IndexPath(item: current, section: 0)
+            guard !self.itemIsVisible(currentPath) else { return }
+            self.heldScrollX = nil
+            self.view.collection.scrollToItems(at: [currentPath], scrollPosition: .nearestHorizontalEdge)
+        }
+    }
+
+    private func itemIsVisible(_ indexPath: IndexPath) -> Bool {
+        guard let item = view.collection.item(at: indexPath) else { return false }
+        let frame = item.view.convert(item.view.bounds, to: view.collection)
+        guard frame.width > 1, frame.height > 1 else { return false }
+        return view.collection.visibleRect.insetBy(dx: -2, dy: -2).contains(frame)
     }
 
     @discardableResult
@@ -161,6 +189,8 @@ final class ImagePreviewBrowser: NSObject, NSCollectionViewDataSource, NSCollect
             view.stage.isHidden = true
             view.textScroll.isHidden = true
             view.stage.image = nil
+            view.stopVideo()
+            view.hidePDF()
             view.textView.string = ""
             view.nameLabel.stringValue = ""
         } else {
@@ -229,21 +259,35 @@ final class ImagePreviewBrowser: NSObject, NSCollectionViewDataSource, NSCollect
             return
         }
         view.nameLabel.stringValue = item.displayName
+        // A reload of the same folder must not restart the video that is on screen.
+        if view.isShowingVideo(item.url) { return }
+        // The previous file may still be playing while the next one loads.
+        view.stopVideo()
+        PlaybackConverter.shared.cancel()
         stageToken += 1
         let token = stageToken
         let path = item.url.path
-        guard let provider = FilePreviews.provider(for: item) else {
+        guard let provider = FilePreviews.stageProvider(for: item) else {
             showUnavailable()
             return
         }
         provider.loadPreview(item) { [weak self] preview in
             guard let self, token == self.stageToken, self.focusedItem()?.url.path == path else { return }
             guard self.view.overlayLabel.isHidden else { return }
+            self.view.nameLabel.stringValue = item.displayName
             switch preview {
             case let .image(image):
                 self.showImage(image)
             case let .text(text):
                 self.showText(text)
+            case let .video(url):
+                self.showVideo(url)
+            case let .pdf(document):
+                self.showPDF(document)
+            case let .converting(image):
+                self.showConverting(image, name: item.displayName)
+            case let .message(text):
+                self.showUnavailable(text)
             case .unavailable:
                 self.showUnavailable()
             }
@@ -251,6 +295,8 @@ final class ImagePreviewBrowser: NSObject, NSCollectionViewDataSource, NSCollect
     }
 
     private func clearStage() {
+        view.stopVideo()
+        view.hidePDF()
         view.stage.image = nil
         view.stage.isHidden = true
         view.textView.string = ""
@@ -260,6 +306,8 @@ final class ImagePreviewBrowser: NSObject, NSCollectionViewDataSource, NSCollect
     }
 
     private func showImage(_ image: NSImage) {
+        view.stopVideo()
+        view.hidePDF()
         view.stage.image = image
         view.stage.isHidden = false
         view.textScroll.isHidden = true
@@ -267,21 +315,62 @@ final class ImagePreviewBrowser: NSObject, NSCollectionViewDataSource, NSCollect
         view.itemMessage.isHidden = true
     }
 
-    private func showText(_ text: String) {
-        view.stage.image = nil
-        view.stage.isHidden = true
-        view.itemMessage.isHidden = true
-        view.textView.string = text
-        view.textScroll.isHidden = false
-        view.needsLayout = true
-    }
-
-    private func showUnavailable() {
+    /// Loads the player paused on the first frame, so moving through a folder stays silent.
+    private func showVideo(_ url: URL) {
+        view.hidePDF()
         view.stage.image = nil
         view.stage.isHidden = true
         view.textScroll.isHidden = true
         view.textView.string = ""
-        view.itemMessage.stringValue = L10n.previewUnavailable
+        view.itemMessage.isHidden = true
+        view.showVideo(url)
+        view.needsLayout = true
+    }
+
+    private func showPDF(_ document: PDFDocument) {
+        view.stopVideo()
+        view.stage.image = nil
+        view.stage.isHidden = true
+        view.textScroll.isHidden = true
+        view.textView.string = ""
+        view.itemMessage.isHidden = true
+        view.showPDF(document)
+        view.needsLayout = true
+    }
+
+    private func showText(_ text: NSAttributedString) {
+        view.stopVideo()
+        view.hidePDF()
+        view.stage.image = nil
+        view.stage.isHidden = true
+        view.itemMessage.isHidden = true
+        view.textView.textStorage?.setAttributedString(text)
+        view.textScroll.isHidden = false
+        view.needsLayout = true
+    }
+
+    private func showConverting(_ image: NSImage?, name: String) {
+        if let image {
+            showImage(image)
+        } else {
+            view.stopVideo()
+            view.hidePDF()
+            view.stage.image = nil
+            view.stage.isHidden = true
+            view.textScroll.isHidden = true
+            view.itemMessage.isHidden = true
+        }
+        view.nameLabel.stringValue = "\(name) — \(L10n.converting)"
+    }
+
+    private func showUnavailable(_ message: String = L10n.previewUnavailable) {
+        view.stopVideo()
+        view.hidePDF()
+        view.stage.image = nil
+        view.stage.isHidden = true
+        view.textScroll.isHidden = true
+        view.textView.string = ""
+        view.itemMessage.stringValue = message
         view.itemMessage.isHidden = false
         view.needsLayout = true
     }
@@ -312,8 +401,24 @@ final class ImagePreviewBrowser: NSObject, NSCollectionViewDataSource, NSCollect
     }
 }
 
+/// Keeps keyboard focus in the file strip, so the arrow keys still move between files instead of scrubbing.
+final class PreviewPlayerView: AVPlayerView {
+    override var acceptsFirstResponder: Bool { false }
+}
+
+/// Same idea as the player: arrow keys stay on the file strip. The wheel still scrolls the pages.
+final class PreviewPDFView: PDFView {
+    override var acceptsFirstResponder: Bool { false }
+}
+
 final class PreviewContainer: NSView {
     let stage = NSImageView()
+    let player = PreviewPlayerView()
+    let pdfView = PreviewPDFView()
+    /// One player for the life of the pane. Creating and releasing an AVPlayer per selection
+    /// made AVFoundation's routing code race with itself and crash.
+    private let moviePlayer = AVPlayer()
+    private var videoURL: URL?
     let nameLabel = NSTextField(labelWithString: "")
     let scroll = NSScrollView()
     let collection = ClickableCollectionView()
@@ -339,10 +444,12 @@ final class PreviewContainer: NSView {
             label.font = .systemFont(ofSize: 13)
             label.textColor = .secondaryLabelColor
             label.isHidden = true
+            label.maximumNumberOfLines = 0
+            label.lineBreakMode = .byWordWrapping
         }
         textView.isEditable = false
         textView.isSelectable = true
-        textView.isRichText = false
+        textView.isRichText = true
         textView.drawsBackground = false
         textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.textColor = .labelColor
@@ -359,6 +466,17 @@ final class PreviewContainer: NSView {
         textScroll.borderType = .noBorder
         textScroll.documentView = textView
         textScroll.isHidden = true
+        moviePlayer.allowsExternalPlayback = false
+        player.player = moviePlayer
+        player.controlsStyle = .inline
+        player.showsFullScreenToggleButton = true
+        player.isHidden = true
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displaysPageBreaks = true
+        pdfView.backgroundColor = .windowBackgroundColor
+        pdfView.isHidden = true
+        pdfView.setAccessibilityIdentifier("pdf-preview")
         separator.boxType = .separator
         scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
@@ -370,6 +488,8 @@ final class PreviewContainer: NSView {
         scroll.documentView = collection
         addSubview(stage)
         addSubview(textScroll)
+        addSubview(player)
+        addSubview(pdfView)
         addSubview(nameLabel)
         addSubview(itemMessage)
         addSubview(overlayLabel)
@@ -380,6 +500,50 @@ final class PreviewContainer: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    /// Pauses and releases the player, so a video never keeps playing after it leaves the pane.
+    func stopVideo() {
+        moviePlayer.pause()
+        if videoURL != nil { moviePlayer.replaceCurrentItem(with: nil) }
+        videoURL = nil
+        player.isHidden = true
+    }
+
+    func isShowingVideo(_ url: URL) -> Bool {
+        videoURL == url && !player.isHidden
+    }
+
+    func hidePDF() {
+        pdfView.document = nil
+        pdfView.isHidden = true
+    }
+
+    func showPDF(_ document: PDFDocument) {
+        pdfView.isHidden = false
+        pdfView.document = document
+        // The scale is wrong until the view has its real frame.
+        layoutSubtreeIfNeeded()
+        pdfView.autoScales = true
+    }
+
+    /// Loads the file paused on its first frame.
+    func showVideo(_ url: URL) {
+        if !isShowingVideo(url) {
+            moviePlayer.replaceCurrentItem(with: AVPlayerItem(url: url))
+            videoURL = url
+        }
+        player.isHidden = false
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        moviePlayer.pause()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { moviePlayer.pause() }
     }
 
     override func layout() {
@@ -403,6 +567,8 @@ final class PreviewContainer: NSView {
         let stageFrame = NSRect(x: 16, y: stageY, width: max(0, width - 32), height: max(0, height - stageY - 12))
         stage.frame = stageFrame
         textScroll.frame = stageFrame
+        player.frame = stageFrame
+        pdfView.frame = stageFrame
         let textWidth = max(textScroll.contentSize.width, 1)
         textView.frame = NSRect(x: 0, y: 0, width: textWidth, height: max(stageFrame.height, textView.frame.height))
         textView.textContainer?.containerSize = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
@@ -412,13 +578,10 @@ final class PreviewContainer: NSView {
     }
 
     private func center(_ label: NSTextField, in stageFrame: NSRect, width: CGFloat) {
-        label.sizeToFit()
-        label.frame = NSRect(
-            x: 12,
-            y: stageFrame.midY - label.frame.height / 2,
-            width: max(0, width - 24),
-            height: label.frame.height
-        )
+        // Long messages wrap, so the height follows the width.
+        let textWidth = max(0, width - 24)
+        let height = label.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: textWidth, height: 10_000)).height ?? 17
+        label.frame = NSRect(x: 12, y: stageFrame.midY - height / 2, width: textWidth, height: height)
     }
 }
 

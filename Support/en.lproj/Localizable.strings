@@ -84,3 +84,16 @@
 "Date Taken" = "Date Taken";
 "Duration" = "Duration";
 "Reset to Default" = "Reset to Default";
+"Eject" = "Eject";
+"Converting for playback…" = "Converting for playback…";
+"macOS can't play this video." = "macOS can't play this video.";
+"This video uses %@, which macOS can't play." = "This video uses %@, which macOS can't play.";
+"Double-click to open it in another app." = "Double-click to open it in another app.";
+"Compress to ZIP" = "Compress to ZIP";
+"Decompress" = "Decompress";
+"Compressing…" = "Compressing…";
+"Decompressing…" = "Decompressing…";
+"Couldn't create the ZIP archive." = "Couldn't create the ZIP archive.";
+"Couldn't decompress the archive." = "Couldn't decompress the archive.";
+"The archive contains an unsafe path." = "The archive contains an unsafe path.";
+"Couldn't decompress the RAR archive. Install unrar or 7-Zip and try again." = "Couldn't decompress the RAR archive. Install unrar or 7-Zip and try again.";

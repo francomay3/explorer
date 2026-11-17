@@ -8,6 +8,9 @@ let package = Package(
         .library(name: "ExplorerCore", targets: ["ExplorerCore"]),
         .executable(name: "Explorer", targets: ["Explorer"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/raspu/Highlightr.git", from: "2.2.1"),
+    ],
     targets: [
         .target(
             name: "ExplorerCore",
@@ -17,7 +20,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "Explorer",
-            dependencies: ["ExplorerCore"],
+            dependencies: [
+                "ExplorerCore",
+                .product(name: "Highlightr", package: "Highlightr"),
+            ],
             path: "Sources/Explorer",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

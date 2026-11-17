@@ -304,7 +304,22 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
         tableView.selectRowIndexes(indexes, byExtendingSelection: false)
         ignoreSelectionChanges = false
         if reveal, let row = focusedRow ?? indexes.max() {
-            tableView.scrollRowToVisible(row)
+            scrollRowIntoView(row)
+        }
+    }
+
+    /// Scrolls only when the row is outside the visible area, and retries after layout if the first attempt landed short.
+    private func scrollRowIntoView(_ row: Int) {
+        guard items.indices.contains(row) else { return }
+        let path = items[row].url.standardized.path
+        tableView.layoutSubtreeIfNeeded()
+        tableView.scrollRowToVisible(row)
+        guard !tableView.visibleRect.intersects(tableView.rect(ofRow: row)) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let current = self.items.firstIndex(where: { $0.url.standardized.path == path }),
+                  self.tableView.selectedRowIndexes.contains(current) else { return }
+            self.tableView.scrollRowToVisible(current)
         }
     }
 
@@ -605,7 +620,10 @@ final class FileListController: NSObject, NSTableViewDataSource, NSTableViewDele
             wanted.insert(ColumnSetting(id: DetailColumn.name.rawValue, width: Double(spec(.name).width)), at: 0)
         }
         let ids = Set(wanted.map(\.id))
-        for tableColumn in tableView.tableColumns where !ids.contains(tableColumn.identifier.rawValue) {
+        // `tableColumns` is a live view of AppKit's own array, so collect the stale ones first;
+        // removing while iterating left a stale index and raised an NSRangeException.
+        let stale = tableView.tableColumns.filter { !ids.contains($0.identifier.rawValue) }
+        for tableColumn in stale {
             tableView.removeTableColumn(tableColumn)
         }
         for setting in wanted where tableView.column(withIdentifier: NSUserInterfaceItemIdentifier(setting.id)) < 0 {

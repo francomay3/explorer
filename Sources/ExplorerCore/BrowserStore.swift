@@ -70,10 +70,14 @@ public final class BrowserStore {
         reload()
     }
 
+    /// Opens the parent and, once it loads, selects the folder that was just left.
     public func up() {
         assertMain()
-        guard let parent = Paths.parent(of: history.current) else { return }
-        open(parent)
+        let child = history.current
+        guard let parent = Paths.parent(of: child) else { return }
+        pendingFocus = PendingFocus(url: child, startRename: false)
+        history.go(parent)
+        reload()
     }
 
     public func refresh() {

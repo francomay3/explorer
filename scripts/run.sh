@@ -18,6 +18,8 @@ cp "$BIN" "$APP/Contents/MacOS/Explorer"
 cp Support/Info.plist "$APP/Contents/Info.plist"
 cp Support/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R Support/en.lproj Support/es.lproj "$APP/Contents/Resources/"
+# SwiftPM resource bundles (Highlightr's themes and highlight.js) are looked up in Contents/Resources.
+cp -R "$(dirname "$BIN")"/*.bundle "$APP/Contents/Resources/"
 chmod +x "$APP/Contents/MacOS/Explorer"
 # An ad-hoc signature pins the code hash, which changes every build, so macOS forgets the Full Disk Access grant.
 # Pinning the requirement to the bundle id keeps the grant valid across rebuilds.

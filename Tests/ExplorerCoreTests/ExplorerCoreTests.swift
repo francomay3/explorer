@@ -17,6 +17,7 @@ enum ExplorerCoreTests {
             ("scan one level", testScanIsOneLevelAndCanShowHiddenFiles),
             ("create and rename", testCreateFolderPicksTheNextFreeNameAndRenameRefusesCollisions),
             ("store load and new folder", testStoreLoadsAFolderAndFocusesANewOneForRename),
+            ("up selects the folder left", testUpFocusesTheFolderJustLeft),
             ("move into a folder", testMoveRefusesToEnterItselfAndMovesAFile),
             ("copy appends a number", testCopyAppendsANumberAndRefusesItself),
             ("typed paths", testTypedPaths),
@@ -30,6 +31,9 @@ enum ExplorerCoreTests {
             ("sort by new columns", testSortByExtensionAndPermissions),
             ("sort by media", testSortByMediaDetails),
             ("scan fills file details", testScanFillsTheFileDetails),
+            ("archive names", testArchiveNamesAndPlacement),
+            ("zip round trip", testZipRoundTrip),
+            ("rar decompress", testRarDecompress),
         ]
         var failed = 0
         for (name, test) in tests {
@@ -223,6 +227,34 @@ private func testStoreLoadsAFolderAndFocusesANewOneForRename() throws {
     try expectEqual(focus?.startRename, true, "new folder wants a rename")
     try expectEqual(focus?.url.lastPathComponent, "New Folder", "new folder name")
     try expect(store.snapshot.items.contains { $0.name == "New Folder" }, "new folder is listed")
+}
+
+private func testUpFocusesTheFolderJustLeft() throws {
+    let directory = try makeTemp()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let sub = directory.appendingPathComponent("Sub")
+    try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+    let suite = "explorer.tests.\(UUID().uuidString)"
+    let defaults = try unwrap(UserDefaults(suiteName: suite), "defaults suite")
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let store = BrowserStore(startingAt: directory, defaults: defaults)
+    store.performsLoadsInline = true
+    store.start()
+    store.open(sub)
+    try expect(store.takePendingFocus() == nil, "opening a folder selects nothing")
+    store.up()
+    try expect(Paths.same(store.snapshot.url, directory), "up opens the parent")
+    let focus = try unwrap(store.takePendingFocus(), "up remembers the folder we left")
+    try expect(Paths.same(focus.url, sub), "up selects that folder")
+    try expectEqual(focus.startRename, false, "up does not start a rename")
+    try expect(store.takePendingFocus() == nil, "the focus is consumed once")
+
+    let root = BrowserStore(startingAt: URL(fileURLWithPath: "/"), defaults: defaults)
+    root.performsLoadsInline = true
+    root.up()
+    try expect(Paths.same(root.snapshot.url, URL(fileURLWithPath: "/")), "the top of the disk has no parent")
+    try expect(root.takePendingFocus() == nil, "up at the top selects nothing")
 }
 
 private func testMoveRefusesToEnterItselfAndMovesAFile() throws {
@@ -504,6 +536,160 @@ private func testFolderSizeCacheReusesChildrenAndKeepsDeltas() throws {
     index = nil
     let reopened = FolderSizeIndex(databaseURL: database)
     try expectEqual(reopened.record(for: root)?.bytes, 42, "the size survives a relaunch")
+}
+
+private func testArchiveNamesAndPlacement() throws {
+    try expectEqual(Archives.zipName(for: ["Photos"], isTaken: { _ in false }), "Photos.zip", "one item")
+    try expectEqual(Archives.zipName(for: ["a.txt", "b.txt"], isTaken: { _ in false }), "Archive.zip", "several items")
+    try expectEqual(
+        Archives.zipName(for: ["Photos"], isTaken: { $0 == "Photos.zip" }),
+        "Photos (1).zip",
+        "a taken zip gets a number before the extension"
+    )
+    try expectEqual(
+        try Archives.extractPlacement(
+            archiveName: "Photos.zip",
+            entries: ["Photos/", "Photos/a.jpg", "__MACOSX/x"],
+            isTaken: { _ in false }
+        ),
+        .alongside("Photos"),
+        "one folder is placed beside the archive"
+    )
+    try expectEqual(
+        try Archives.extractPlacement(
+            archiveName: "Photos.zip",
+            entries: ["Photos/a.jpg"],
+            isTaken: { $0 == "Photos" }
+        ),
+        .alongside("Photos (1)"),
+        "an existing folder gets a number"
+    )
+    try expectEqual(
+        try Archives.extractPlacement(
+            archiveName: "Archive.zip",
+            entries: ["a.txt", "b.txt"],
+            isTaken: { _ in false }
+        ),
+        .folder("Archive"),
+        "loose files land in a folder"
+    )
+    try expectEqual(
+        try Archives.extractPlacement(
+            archiveName: "notes.txt.zip",
+            entries: ["notes.txt"],
+            isTaken: { $0 == "notes.txt" }
+        ),
+        .alongside("notes (1).txt"),
+        "a single file keeps its extension"
+    )
+    try expectThrows({
+        _ = try Archives.extractPlacement(archiveName: "x.zip", entries: ["../nope"], isTaken: { _ in false })
+    }, { ($0 as? ArchiveError) == .unsafePath })
+    try expectThrows({
+        _ = try Archives.extractPlacement(archiveName: "x.zip", entries: ["..\\nope"], isTaken: { _ in false })
+    }, { ($0 as? ArchiveError) == .unsafePath })
+
+    // 7-Zip prints the archive, a dashed line, then one block per entry separated by a blank line.
+    let listing = """
+    Path = /tmp/Archive.zip
+    Type = zip
+
+    ----------
+    Path = Folder With Space
+    Folder = +
+    Size = 0
+
+    Path = Folder With Space/file.txt
+    Folder = -
+    Size = 2
+    """
+    try expectEqual(
+        Archives.sevenZipEntries(listing),
+        ["Folder With Space/", "Folder With Space/file.txt"],
+        "7-Zip listing keeps the folder and skips the archive itself"
+    )
+}
+
+private func testZipRoundTrip() throws {
+    let directory = try makeTemp()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let photos = directory.appendingPathComponent("Photos", isDirectory: true)
+    try FileManager.default.createDirectory(at: photos.appendingPathComponent("Nested"), withIntermediateDirectories: true)
+    try Data("pic".utf8).write(to: photos.appendingPathComponent("a.jpg"))
+    try Data("secret".utf8).write(to: photos.appendingPathComponent(".hidden"))
+    try Data("deep".utf8).write(to: photos.appendingPathComponent("Nested/b.txt"))
+    let notes = directory.appendingPathComponent("notes.txt")
+    try Data("hello".utf8).write(to: notes)
+    let folderNamedZip = directory.appendingPathComponent("folder.zip", isDirectory: true)
+    try FileManager.default.createDirectory(at: folderNamedZip, withIntermediateDirectories: true)
+
+    try expect(Archives.format(of: folderNamedZip) == nil, "a folder named .zip is not an archive")
+    try expect(Archives.format(of: notes) == nil, "a text file is not an archive")
+    try expect(!Archives.canDecompress([notes, photos]), "mixed items are not decompressed together")
+
+    let photoZip = try Archives.compress([photos])
+    try expectEqual(photoZip.lastPathComponent, "Photos.zip", "a folder keeps its name")
+    try expect(Archives.format(of: photoZip) == .zip, "the new file is a zip")
+    let photoCopy = try Archives.decompress(photoZip)
+    try expectEqual(photoCopy.lastPathComponent, "Photos (1)", "the original folder keeps its name")
+    try expectEqual(try String(contentsOf: photoCopy.appendingPathComponent("a.jpg")), "pic", "photo bytes")
+    try expectEqual(try String(contentsOf: photoCopy.appendingPathComponent(".hidden")), "secret", "hidden files are kept")
+    try expectEqual(try String(contentsOf: photoCopy.appendingPathComponent("Nested/b.txt")), "deep", "nested files are kept")
+
+    let notesZip = try Archives.compress([notes])
+    try expectEqual(notesZip.lastPathComponent, "notes.txt.zip", "a file keeps its extension")
+    let notesCopy = try Archives.decompress(notesZip)
+    try expectEqual(notesCopy.lastPathComponent, "notes (1).txt", "the original file keeps its name")
+    try expectEqual(try String(contentsOf: notesCopy), "hello", "note bytes")
+
+    let real = directory.appendingPathComponent("real", isDirectory: true)
+    try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+    try Data("inside".utf8).write(to: real.appendingPathComponent("inside.txt"))
+    let link = directory.appendingPathComponent("link")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+    let linkZip = try Archives.compress([link])
+    let linkCopy = try Archives.decompress(linkZip)
+    let linkValues = try linkCopy.resourceValues(forKeys: [.isSymbolicLinkKey])
+    try expect(linkValues.isSymbolicLink == true, "a symlink is stored as a link")
+
+    try Data().write(to: directory.appendingPathComponent("Archive.zip"))
+    let bundle = try Archives.compress([notes, photos])
+    try expectEqual(bundle.lastPathComponent, "Archive (1).zip", "Archive.zip was already there")
+    let expanded = try Archives.decompress(bundle)
+    try expectEqual(expanded.lastPathComponent, "Archive (1)", "several items share a folder")
+    var isDirectory: ObjCBool = false
+    try expect(
+        FileManager.default.fileExists(atPath: expanded.path, isDirectory: &isDirectory) && isDirectory.boolValue,
+        "the bundle is a folder"
+    )
+    try expectEqual(try String(contentsOf: expanded.appendingPathComponent("notes.txt")), "hello", "bundled note")
+    try expectEqual(try String(contentsOf: expanded.appendingPathComponent("Photos/a.jpg")), "pic", "bundled photo")
+
+    let slip = directory.appendingPathComponent("slip.zip")
+    let slipBytes = Data(base64Encoded: "UEsDBBQAAAAAACVLcV0QP9GrBAAAAAQAAAAOAAAALi4vZXNjYXBlZC50eHRub3BlUEsDBBQAAAAAACVLcV2pNed1AwAAAAMAAAAGAAAAb2sudHh0eWVzUEsBAhQDFAAAAAAAJUtxXRA/0asEAAAABAAAAA4AAAAAAAAAAAAAAIABAAAAAC4uL2VzY2FwZWQudHh0UEsBAhQDFAAAAAAAJUtxXak153UDAAAAAwAAAAYAAAAAAAAAAAAAAIABMAAAAG9rLnR4dFBLBQYAAAAAAgACAHAAAABXAAAAAAA=")!
+    try slipBytes.write(to: slip)
+    try expectThrows({
+        _ = try Archives.decompress(slip)
+    }, { ($0 as? ArchiveError) == .unsafePath })
+    try expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("escaped.txt").path), "a slip path is not written")
+    try expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("ok.txt").path), "a refused archive writes nothing")
+}
+
+private func testRarDecompress() throws {
+    let directory = try makeTemp()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let archive = directory.appendingPathComponent("hello.rar")
+    let bytes = Data(base64Encoded: "UmFyIRoHAM+QcwAADQAAAAAAAAAoknQAACkACgAAAAoAAAAAndKAsQAAAAAUMAkAIAAAAGhlbGxvLnR4dGhlbGxvIHJhcgoEsHsAAAcA")!
+    try bytes.write(to: archive)
+    try expect(Archives.format(of: archive) == .rar, "rar extension")
+    try expect(Archives.canDecompress([archive]), "a rar can be decompressed")
+    do {
+        let file = try Archives.decompress(archive)
+        try expectEqual(file.lastPathComponent, "hello.txt", "the file lands beside the archive")
+        try expectEqual(try String(contentsOf: file, encoding: .utf8), "hello rar\n", "rar bytes")
+    } catch ArchiveError.rarUnavailable {
+        return
+    }
 }
 
 private func makeTemp() throws -> URL {

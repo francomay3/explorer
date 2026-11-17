@@ -1,0 +1,16 @@
+---
+description: Rebuild and relaunch Explorer after adding a feature
+alwaysApply: true
+---
+
+# Relaunch after a feature
+
+After you add or change a feature the user can see or use, rebuild and relaunch the app before you say the work is done. Do this without waiting to be asked.
+
+```bash
+make run
+```
+
+That builds Explorer, installs it to `/Applications/Explorer.app`, and opens that copy. Launchpad starts the copy in `/Applications`, so opening a second build starts a second app.
+
+Skip this when the change cannot show up in the running app, such as a question, a review, or an edit that only touches tests or docs.

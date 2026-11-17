@@ -305,8 +305,34 @@ final class IconBrowser: NSObject, NSCollectionViewDataSource, NSCollectionViewD
         collection.syncSelectionAnchor()
         ignoreSelectionChanges = false
         if reveal, let focusedIndex {
-            collection.scrollToItems(at: [IndexPath(item: focusedIndex, section: 0)], scrollPosition: .centeredVertically)
+            scrollItemIntoView(focusedIndex, position: .nearestVerticalEdge)
         }
+    }
+
+    /// Scrolls only when the item is outside the visible area, and retries after layout if the first attempt landed short.
+    private func scrollItemIntoView(_ index: Int, position: NSCollectionView.ScrollPosition) {
+        guard items.indices.contains(index) else { return }
+        let path = items[index].url.standardized.path
+        let indexPath = IndexPath(item: index, section: 0)
+        collection.layoutSubtreeIfNeeded()
+        if itemIsVisible(indexPath) { return }
+        collection.scrollToItems(at: [indexPath], scrollPosition: position)
+        guard !itemIsVisible(indexPath) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let current = self.items.firstIndex(where: { $0.url.standardized.path == path }),
+                  self.collection.selectionIndexPaths.contains(IndexPath(item: current, section: 0)) else { return }
+            let currentPath = IndexPath(item: current, section: 0)
+            guard !self.itemIsVisible(currentPath) else { return }
+            self.collection.scrollToItems(at: [currentPath], scrollPosition: position)
+        }
+    }
+
+    private func itemIsVisible(_ indexPath: IndexPath) -> Bool {
+        guard let item = collection.item(at: indexPath) else { return false }
+        let frame = item.view.convert(item.view.bounds, to: collection)
+        guard frame.width > 1, frame.height > 1 else { return false }
+        return collection.visibleRect.insetBy(dx: -2, dy: -2).contains(frame)
     }
 
     func selectionPaths() -> Set<String> {

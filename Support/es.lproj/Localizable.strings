@@ -84,3 +84,16 @@
 "Date Taken" = "Fecha de captura";
 "Duration" = "Duración";
 "Reset to Default" = "Restablecer";
+"Eject" = "Expulsar";
+"Converting for playback…" = "Convirtiendo para reproducir…";
+"macOS can't play this video." = "macOS no puede reproducir este video.";
+"This video uses %@, which macOS can't play." = "Este video usa %@, que macOS no puede reproducir.";
+"Double-click to open it in another app." = "Haz doble clic para abrirlo en otra app.";
+"Compress to ZIP" = "Comprimir a ZIP";
+"Decompress" = "Descomprimir";
+"Compressing…" = "Comprimiendo…";
+"Decompressing…" = "Descomprimiendo…";
+"Couldn't create the ZIP archive." = "No se pudo crear el archivo ZIP.";
+"Couldn't decompress the archive." = "No se pudo descomprimir el archivo.";
+"The archive contains an unsafe path." = "El archivo contiene una ruta no segura.";
+"Couldn't decompress the RAR archive. Install unrar or 7-Zip and try again." = "No se pudo descomprimir el archivo RAR. Instala unrar o 7-Zip y vuelve a intentarlo.";

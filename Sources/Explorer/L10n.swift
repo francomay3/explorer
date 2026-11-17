@@ -83,6 +83,21 @@ enum L10n {
     static let bookmarks = NSLocalizedString("Bookmarks", comment: "Sidebar section")
     static let addBookmark = NSLocalizedString("Add to Bookmarks", comment: "")
     static let removeBookmark = NSLocalizedString("Remove from Bookmarks", comment: "")
+    static let converting = NSLocalizedString("Converting for playback…", comment: "Shown beside the file name")
+
+    static func cantPlay(codec: String?) -> String {
+        let hint = NSLocalizedString("Double-click to open it in another app.", comment: "")
+        guard let codec else {
+            return NSLocalizedString("macOS can't play this video.", comment: "") + " " + hint
+        }
+        return String(format: NSLocalizedString("This video uses %@, which macOS can't play.", comment: ""), codec) + " " + hint
+    }
+
+    static let eject = NSLocalizedString("Eject", comment: "")
+    static let compressToZip = NSLocalizedString("Compress to ZIP", comment: "Context menu")
+    static let decompress = NSLocalizedString("Decompress", comment: "Context menu, zip and rar")
+    static let compressing = NSLocalizedString("Compressing…", comment: "Status bar")
+    static let decompressing = NSLocalizedString("Decompressing…", comment: "Status bar")
     static let locations = NSLocalizedString("Locations", comment: "Sidebar section for disks")
 
     static func itemsMatching(_ shown: Int, of total: Int) -> String {
